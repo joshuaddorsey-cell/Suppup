@@ -1,6 +1,7 @@
 # Miscellaneous
 *.class
 *.log
+hs_err_pid*.log
 *.pyc
 *.swp
 .DS_Store

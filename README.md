@@ -14,15 +14,21 @@ parks, and nearby places to pick up treats.
 - Uses OpenStreetMap data and does not require a paid API key.
 - Clearly labels preview examples when live map data or location is unavailable.
 
-The Android package is `com.josh.suppup`. Version 1.0.0 is the first prototype.
+The Android package is `com.josh.suppup`. Version 1.0.1 is the current tested
+release.
 
 ## Important public-launch note
 
-Ratings are currently stored on the phone. A public release will need a shared
-backend, moderation, abuse protection, privacy documentation, and a scalable map
-data strategy. The public Overpass service is useful for development and light
-testing; a production app should not depend on a community endpoint without a
-capacity plan.
+Ratings and favorites are currently stored only on the phone. The app includes
+a public privacy policy and resilient light-use OpenStreetMap searches. A larger
+public launch will still need a scalable map-data plan; community Overpass
+services are best-effort and are not a guaranteed production backend.
+
+## Google Play release
+
+Play Store copy, data-safety notes, and graphics live in `play_store/`. Release
+signing reads the ignored `android/key.properties` file and never checks the
+upload key or its password into Git.
 
 ## Checks
 

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../data/preview_spots.dart';
 import '../models/spot.dart';
@@ -34,6 +35,12 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   static const _demoCenter = LatLng(40.7128, -74.0060);
+  static final _privacyPolicyUri = Uri.parse(
+    'https://joshuaddorsey-cell.github.io/Suppup/privacy.html',
+  );
+  static final _openStreetMapCopyrightUri = Uri.parse(
+    'https://www.openstreetmap.org/copyright',
+  );
 
   late final LocationProvider _locationProvider;
   late final NearbyRepository _nearbyRepository;
@@ -139,6 +146,15 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     } catch (_) {
       // The live result remains useful even if local preferences are unavailable.
+    }
+  }
+
+  Future<void> _openExternalPage(Uri uri) async {
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication) &&
+        mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open that page.')),
+      );
     }
   }
 
@@ -258,11 +274,25 @@ class _HomeScreenState extends State<HomeScreen> {
                     const SizedBox(height: 12),
                   ],
                 const SizedBox(height: 8),
-                const Center(
-                  child: Text(
-                    'Live places and map tiles © OpenStreetMap contributors',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: SuppupColors.muted, fontSize: 11),
+                Center(
+                  child: Wrap(
+                    alignment: WrapAlignment.center,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      TextButton(
+                        onPressed: () => _openExternalPage(_privacyPolicyUri),
+                        child: const Text('Privacy policy'),
+                      ),
+                      const Text(
+                        '•',
+                        style: TextStyle(color: SuppupColors.muted),
+                      ),
+                      TextButton(
+                        onPressed: () =>
+                            _openExternalPage(_openStreetMapCopyrightUri),
+                        child: const Text('© OpenStreetMap contributors'),
+                      ),
+                    ],
                   ),
                 ),
               ],
