@@ -11,30 +11,75 @@ abstract interface class NearbyRepository {
 }
 
 class OpenStreetMapNearbyRepository implements NearbyRepository {
-  OpenStreetMapNearbyRepository({http.Client? client})
-    : _client = client ?? http.Client();
+  OpenStreetMapNearbyRepository({
+    http.Client? client,
+    List<Uri>? endpoints,
+    Duration? requestTimeout,
+    Duration? cacheTtl,
+  }) : _client = client ?? http.Client(),
+       _endpoints = endpoints ?? _defaultEndpoints,
+       _requestTimeout = requestTimeout ?? const Duration(seconds: 28),
+       _cacheTtl = cacheTtl ?? const Duration(minutes: 10);
 
   final http.Client _client;
+  final List<Uri> _endpoints;
+  final Duration _requestTimeout;
+  final Duration _cacheTtl;
+  final Map<String, _CachedNearbyResults> _cache = {};
 
-  static final _endpoint = Uri.parse('https://overpass-api.de/api/interpreter');
+  static final List<Uri> _defaultEndpoints = [
+    Uri.parse('https://overpass-api.de/api/interpreter'),
+    Uri.parse('https://maps.mail.ru/osm/tools/overpass/api/interpreter'),
+    Uri.parse('https://overpass.private.coffee/api/interpreter'),
+  ];
 
   @override
   Future<List<Spot>> findNearby(LatLng center, SpotCategory category) async {
-    final response = await _client
-        .post(
-          _endpoint,
-          headers: const {
-            'Accept': 'application/json',
-            'User-Agent': 'Suppup/1.0 (com.josh.suppup)',
-          },
-          body: {'data': _query(center, category)},
-        )
-        .timeout(const Duration(seconds: 22));
-    if (response.statusCode != 200) {
-      throw NearbyException('The nearby map service is taking a break.');
+    final cacheKey = _cacheKey(center, category);
+    final cached = _cache[cacheKey];
+    if (cached != null &&
+        DateTime.now().difference(cached.savedAt) < _cacheTtl) {
+      return [...cached.spots];
     }
 
-    final payload = jsonDecode(response.body) as Map<String, dynamic>;
+    Object? lastFailure;
+    final query = _query(center, category);
+    for (final endpoint in _endpoints) {
+      try {
+        final response = await _client
+            .post(
+              endpoint,
+              headers: const {
+                'Accept': 'application/json',
+                'User-Agent': 'Suppup/1.0.1 (com.josh.suppup)',
+              },
+              body: {'data': query},
+            )
+            .timeout(_requestTimeout);
+        if (response.statusCode != 200) {
+          lastFailure = 'HTTP ${response.statusCode} from ${endpoint.host}';
+          continue;
+        }
+
+        final spots = _parseResponse(response.body, center, category);
+        _cache[cacheKey] = _CachedNearbyResults(DateTime.now(), spots);
+        return [...spots];
+      } catch (error) {
+        lastFailure = error;
+      }
+    }
+
+    throw NearbyException(
+      'The nearby map services are taking a break. $lastFailure',
+    );
+  }
+
+  List<Spot> _parseResponse(
+    String responseBody,
+    LatLng center,
+    SpotCategory category,
+  ) {
+    final payload = jsonDecode(responseBody) as Map<String, dynamic>;
     final elements = payload['elements'] as List<dynamic>? ?? const [];
     final spots = <Spot>[];
     for (final rawElement in elements) {
@@ -72,13 +117,18 @@ class OpenStreetMapNearbyRepository implements NearbyRepository {
     return rankSpots(spots, category).take(20).toList();
   }
 
+  String _cacheKey(LatLng center, SpotCategory category) =>
+      '${category.name}:${center.latitude.toStringAsFixed(3)}:'
+      '${center.longitude.toStringAsFixed(3)}';
+
   String _query(LatLng center, SpotCategory category) {
-    final around = 'around:8000,${center.latitude},${center.longitude}';
+    final radiusMeters = category == SpotCategory.walks ? 4000 : 8000;
+    final around =
+        'around:$radiusMeters,${center.latitude},${center.longitude}';
     final body = switch (category) {
       SpotCategory.walks =>
         '''
         way($around)["highway"~"path|footway|pedestrian"]["access"!="private"]["foot"!="no"];
-        relation($around)["route"="hiking"]["access"!="private"];
       ''',
       SpotCategory.dogParks =>
         '''
@@ -90,7 +140,7 @@ class OpenStreetMapNearbyRepository implements NearbyRepository {
         nwr($around)["amenity"~"cafe|ice_cream"]["dog"~"yes|leashed"];
       ''',
     };
-    return '[out:json][timeout:18];($body);out tags center 80;';
+    return '[out:json][timeout:20];($body);out tags center 60;';
   }
 
   String _name(Map<String, dynamic> tags, SpotCategory category) {
@@ -139,6 +189,13 @@ class OpenStreetMapNearbyRepository implements NearbyRepository {
     }
     return badges.take(3).toList();
   }
+}
+
+class _CachedNearbyResults {
+  const _CachedNearbyResults(this.savedAt, this.spots);
+
+  final DateTime savedAt;
+  final List<Spot> spots;
 }
 
 List<Spot> rankSpots(List<Spot> spots, SpotCategory category) {
