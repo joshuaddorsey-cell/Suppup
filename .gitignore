@@ -51,3 +51,6 @@ app.*.map.json
 secrets.json
 *.jks
 *.keystore
+
+# VS Code shares project workflows, but this machine's Flutter path stays local.
+/.vscode/settings.json
