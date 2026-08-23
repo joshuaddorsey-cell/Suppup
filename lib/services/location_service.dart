@@ -8,6 +8,9 @@ abstract interface class LocationProvider {
 class DeviceLocationProvider implements LocationProvider {
   const DeviceLocationProvider();
 
+  static const _recentLocationAge = Duration(minutes: 10);
+  static const _freshLocationTimeout = Duration(seconds: 6);
+
   @override
   Future<LatLng> currentLocation() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -28,12 +31,25 @@ class DeviceLocationProvider implements LocationProvider {
       );
     }
 
-    final position = await Geolocator.getCurrentPosition(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        timeLimit: Duration(seconds: 12),
-      ),
-    );
+    final lastKnownPosition = await Geolocator.getLastKnownPosition();
+    if (lastKnownPosition != null &&
+        DateTime.now().difference(lastKnownPosition.timestamp).abs() <=
+            _recentLocationAge) {
+      return LatLng(lastKnownPosition.latitude, lastKnownPosition.longitude);
+    }
+
+    Position position;
+    try {
+      position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+          timeLimit: _freshLocationTimeout,
+        ),
+      );
+    } catch (_) {
+      if (lastKnownPosition == null) rethrow;
+      position = lastKnownPosition;
+    }
     return LatLng(position.latitude, position.longitude);
   }
 }

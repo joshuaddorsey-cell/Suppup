@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/spot.dart';
 
@@ -10,21 +11,57 @@ abstract interface class NearbyRepository {
   Future<List<Spot>> findNearby(LatLng center, SpotCategory category);
 }
 
-class OpenStreetMapNearbyRepository implements NearbyRepository {
+abstract interface class CachedNearbyRepository implements NearbyRepository {
+  Future<List<Spot>?> cachedNearby(LatLng center, SpotCategory category);
+}
+
+abstract interface class NearbyCacheStore {
+  Future<String?> read(String key);
+  Future<void> write(String key, String value);
+}
+
+class SharedPreferencesNearbyCacheStore implements NearbyCacheStore {
+  static const _keyPrefix = 'nearby_cache_v1_';
+  final Future<SharedPreferences> _preferences =
+      SharedPreferences.getInstance();
+
+  @override
+  Future<String?> read(String key) async {
+    final preferences = await _preferences;
+    return preferences.getString('$_keyPrefix$key');
+  }
+
+  @override
+  Future<void> write(String key, String value) async {
+    final preferences = await _preferences;
+    await preferences.setString('$_keyPrefix$key', value);
+  }
+}
+
+class OpenStreetMapNearbyRepository implements CachedNearbyRepository {
   OpenStreetMapNearbyRepository({
     http.Client? client,
     List<Uri>? endpoints,
     Duration? requestTimeout,
+    Duration? totalRequestTimeout,
     Duration? cacheTtl,
+    Duration? maximumCacheAge,
+    this.cacheStore,
   }) : _client = client ?? http.Client(),
        _endpoints = endpoints ?? _defaultEndpoints,
-       _requestTimeout = requestTimeout ?? const Duration(seconds: 28),
-       _cacheTtl = cacheTtl ?? const Duration(minutes: 10);
+       _requestTimeout = requestTimeout ?? const Duration(seconds: 7),
+       _totalRequestTimeout =
+           totalRequestTimeout ?? const Duration(seconds: 12),
+       _cacheTtl = cacheTtl ?? const Duration(minutes: 30),
+       _maximumCacheAge = maximumCacheAge ?? const Duration(hours: 24);
 
   final http.Client _client;
   final List<Uri> _endpoints;
   final Duration _requestTimeout;
+  final Duration _totalRequestTimeout;
   final Duration _cacheTtl;
+  final Duration _maximumCacheAge;
+  final NearbyCacheStore? cacheStore;
   final Map<String, _CachedNearbyResults> _cache = {};
 
   static final List<Uri> _defaultEndpoints = [
@@ -34,17 +71,33 @@ class OpenStreetMapNearbyRepository implements NearbyRepository {
   ];
 
   @override
+  Future<List<Spot>?> cachedNearby(LatLng center, SpotCategory category) async {
+    final cached = await _readCache(_cacheKey(center, category));
+    if (cached == null ||
+        DateTime.now().difference(cached.savedAt) > _maximumCacheAge) {
+      return null;
+    }
+    return _refreshDistances(cached.spots, center);
+  }
+
+  @override
   Future<List<Spot>> findNearby(LatLng center, SpotCategory category) async {
     final cacheKey = _cacheKey(center, category);
-    final cached = _cache[cacheKey];
+    final cached = await _readCache(cacheKey);
     if (cached != null &&
         DateTime.now().difference(cached.savedAt) < _cacheTtl) {
-      return [...cached.spots];
+      return _refreshDistances(cached.spots, center);
     }
 
     Object? lastFailure;
     final query = _query(center, category);
+    final stopwatch = Stopwatch()..start();
     for (final endpoint in _endpoints) {
+      final remaining = _totalRequestTimeout - stopwatch.elapsed;
+      if (remaining <= Duration.zero) break;
+      final attemptTimeout = remaining < _requestTimeout
+          ? remaining
+          : _requestTimeout;
       try {
         final response = await _client
             .post(
@@ -55,14 +108,16 @@ class OpenStreetMapNearbyRepository implements NearbyRepository {
               },
               body: {'data': query},
             )
-            .timeout(_requestTimeout);
+            .timeout(attemptTimeout);
         if (response.statusCode != 200) {
           lastFailure = 'HTTP ${response.statusCode} from ${endpoint.host}';
           continue;
         }
 
         final spots = _parseResponse(response.body, center, category);
-        _cache[cacheKey] = _CachedNearbyResults(DateTime.now(), spots);
+        final entry = _CachedNearbyResults(DateTime.now(), spots);
+        _cache[cacheKey] = entry;
+        await _writeCache(cacheKey, entry);
         return [...spots];
       } catch (error) {
         lastFailure = error;
@@ -72,6 +127,43 @@ class OpenStreetMapNearbyRepository implements NearbyRepository {
     throw NearbyException(
       'The nearby map services are taking a break. $lastFailure',
     );
+  }
+
+  Future<_CachedNearbyResults?> _readCache(String key) async {
+    final memoryEntry = _cache[key];
+    if (memoryEntry != null) return memoryEntry;
+
+    try {
+      final encoded = await cacheStore?.read(key);
+      if (encoded == null) return null;
+      final entry = _CachedNearbyResults.fromJson(
+        jsonDecode(encoded) as Map<String, dynamic>,
+      );
+      _cache[key] = entry;
+      return entry;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _writeCache(String key, _CachedNearbyResults entry) async {
+    try {
+      await cacheStore?.write(key, jsonEncode(entry.toJson()));
+    } catch (_) {
+      // Nearby results still work when persistent cache storage is unavailable.
+    }
+  }
+
+  List<Spot> _refreshDistances(List<Spot> spots, LatLng center) {
+    return spots.map((spot) {
+      final distanceMeters = Geolocator.distanceBetween(
+        center.latitude,
+        center.longitude,
+        spot.location.latitude,
+        spot.location.longitude,
+      );
+      return spot.copyWith(distanceMiles: distanceMeters / 1609.344);
+    }).toList();
   }
 
   List<Spot> _parseResponse(
@@ -118,8 +210,8 @@ class OpenStreetMapNearbyRepository implements NearbyRepository {
   }
 
   String _cacheKey(LatLng center, SpotCategory category) =>
-      '${category.name}:${center.latitude.toStringAsFixed(3)}:'
-      '${center.longitude.toStringAsFixed(3)}';
+      '${category.name}:${center.latitude.toStringAsFixed(2)}:'
+      '${center.longitude.toStringAsFixed(2)}';
 
   String _query(LatLng center, SpotCategory category) {
     final radiusMeters = category == SpotCategory.walks ? 4000 : 8000;
@@ -140,7 +232,7 @@ class OpenStreetMapNearbyRepository implements NearbyRepository {
         nwr($around)["amenity"~"cafe|ice_cream"]["dog"~"yes|leashed"];
       ''',
     };
-    return '[out:json][timeout:20];($body);out tags center 60;';
+    return '[out:json][timeout:8];($body);out tags center 60;';
   }
 
   String _name(Map<String, dynamic> tags, SpotCategory category) {
@@ -196,6 +288,52 @@ class _CachedNearbyResults {
 
   final DateTime savedAt;
   final List<Spot> spots;
+
+  factory _CachedNearbyResults.fromJson(Map<String, dynamic> json) {
+    final rawSpots = json['spots'] as List<dynamic>? ?? const [];
+    return _CachedNearbyResults(
+      DateTime.parse(json['savedAt'] as String),
+      rawSpots.map((rawSpot) {
+        final spot = Map<String, dynamic>.from(rawSpot as Map);
+        return Spot(
+          id: spot['id'] as String,
+          name: spot['name'] as String,
+          category: SpotCategory.values.byName(spot['category'] as String),
+          location: LatLng(
+            (spot['latitude'] as num).toDouble(),
+            (spot['longitude'] as num).toDouble(),
+          ),
+          distanceMiles: (spot['distanceMiles'] as num).toDouble(),
+          description: spot['description'] as String,
+          badges: (spot['badges'] as List<dynamic>)
+              .map((badge) => badge as String)
+              .toList(),
+          communityRating: (spot['communityRating'] as num?)?.toDouble(),
+          ratingCount: spot['ratingCount'] as int? ?? 0,
+          isPreview: spot['isPreview'] as bool? ?? false,
+        );
+      }).toList(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'savedAt': savedAt.toIso8601String(),
+    'spots': spots.map((spot) {
+      return {
+        'id': spot.id,
+        'name': spot.name,
+        'category': spot.category.name,
+        'latitude': spot.location.latitude,
+        'longitude': spot.location.longitude,
+        'distanceMiles': spot.distanceMiles,
+        'description': spot.description,
+        'badges': spot.badges,
+        'communityRating': spot.communityRating,
+        'ratingCount': spot.ratingCount,
+        'isPreview': spot.isPreview,
+      };
+    }).toList(),
+  };
 }
 
 List<Spot> rankSpots(List<Spot> spots, SpotCategory category) {

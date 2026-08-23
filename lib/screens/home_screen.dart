@@ -61,7 +61,10 @@ class _HomeScreenState extends State<HomeScreen> {
     _locationProvider =
         widget.locationProvider ?? const DeviceLocationProvider();
     _nearbyRepository =
-        widget.nearbyRepository ?? OpenStreetMapNearbyRepository();
+        widget.nearbyRepository ??
+        OpenStreetMapNearbyRepository(
+          cacheStore: SharedPreferencesNearbyCacheStore(),
+        );
     _preferences = widget.preferenceStore ?? UserPreferenceStore();
     unawaited(_load(refreshLocation: true));
   }
@@ -73,6 +76,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _notice = null;
     });
 
+    final favoritesFuture = _preferences.favorites();
     var center = _center;
     var usePreview = false;
     String? notice;
@@ -87,6 +91,31 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
+    List<Spot>? savedResults;
+    if (!usePreview && _nearbyRepository is CachedNearbyRepository) {
+      try {
+        savedResults = await _nearbyRepository.cachedNearby(center, _category);
+        if (savedResults != null && mounted && requestId == _requestId) {
+          Set<String> favorites;
+          try {
+            favorites = await favoritesFuture;
+            savedResults = await _applySavedRatings(savedResults);
+          } catch (_) {
+            favorites = <String>{};
+          }
+          if (!mounted || requestId != _requestId) return;
+          setState(() {
+            _center = center;
+            _spots = rankSpots(savedResults!, _category);
+            _favorites = favorites;
+            _notice = 'Showing saved nearby results while Suppup refreshes.';
+          });
+        }
+      } catch (_) {
+        savedResults = null;
+      }
+    }
+
     List<Spot> results;
     if (usePreview) {
       results = previewSpots(center, _category);
@@ -94,6 +123,15 @@ class _HomeScreenState extends State<HomeScreen> {
       try {
         results = await _nearbyRepository.findNearby(center, _category);
       } catch (_) {
+        if (savedResults != null) {
+          if (!mounted || requestId != _requestId) return;
+          setState(() {
+            _notice =
+                'Live results could not refresh. Showing your saved nearby results.';
+            _loading = false;
+          });
+          return;
+        }
         usePreview = true;
         results = previewSpots(center, _category);
         notice =
@@ -120,19 +158,17 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<List<Spot>> _applySavedRatings(List<Spot> spots) async {
-    final updated = <Spot>[];
-    for (final spot in spots) {
-      final savedRating = await _preferences.ratingFor(spot.id);
-      updated.add(
-        savedRating == null
+    return Future.wait(
+      spots.map((spot) async {
+        final savedRating = await _preferences.ratingFor(spot.id);
+        return savedRating == null
             ? spot
             : spot.copyWith(
                 communityRating: savedRating,
                 ratingCount: spot.ratingCount == 0 ? 1 : spot.ratingCount,
-              ),
-      );
-    }
-    return updated;
+              );
+      }),
+    );
   }
 
   Future<void> _refreshSavedState() async {

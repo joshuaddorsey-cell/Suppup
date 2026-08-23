@@ -75,4 +75,68 @@ void main() {
     );
     expect(requestCount, 2);
   });
+
+  test(
+    'reuses saved nearby results after the repository is recreated',
+    () async {
+      var requestCount = 0;
+      final cacheStore = _MemoryNearbyCacheStore();
+      final client = MockClient((_) async {
+        requestCount++;
+        return http.Response(
+          jsonEncode({
+            'elements': [
+              {
+                'type': 'node',
+                'id': 99,
+                'lat': 33.776,
+                'lon': -84.352,
+                'tags': {'name': 'Saved Dog Walk'},
+              },
+            ],
+          }),
+          200,
+        );
+      });
+      const center = LatLng(33.775, -84.351);
+
+      final firstRepository = OpenStreetMapNearbyRepository(
+        client: client,
+        endpoints: [Uri.parse('https://primary.example/api/interpreter')],
+        cacheStore: cacheStore,
+      );
+      await firstRepository.findNearby(center, SpotCategory.walks);
+
+      final reopenedRepository = OpenStreetMapNearbyRepository(
+        client: client,
+        endpoints: [Uri.parse('https://primary.example/api/interpreter')],
+        cacheStore: cacheStore,
+      );
+      final saved = await reopenedRepository.cachedNearby(
+        center,
+        SpotCategory.walks,
+      );
+      final freshEnough = await reopenedRepository.findNearby(
+        center,
+        SpotCategory.walks,
+      );
+
+      expect(saved, isNotNull);
+      expect(saved!.single.name, 'Saved Dog Walk');
+      expect(freshEnough.single.id, saved.single.id);
+      expect(requestCount, 1);
+    },
+  );
+}
+
+class _MemoryNearbyCacheStore implements NearbyCacheStore {
+  final Map<String, String> values = {};
+
+  @override
+  Future<String?> read(String key) async => values[key];
+
+  @override
+  Future<void> write(String key, String value) async {
+    values[key] = value;
+  }
 }
