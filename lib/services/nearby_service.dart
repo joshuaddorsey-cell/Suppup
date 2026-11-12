@@ -39,6 +39,8 @@ class SharedPreferencesNearbyCacheStore implements NearbyCacheStore {
 }
 
 class OpenStreetMapNearbyRepository implements CachedNearbyRepository {
+  // The server query allows 8 seconds. Leave transport overhead and enough
+  // total budget for all three providers, including a slow first and second.
   OpenStreetMapNearbyRepository({
     http.Client? client,
     List<Uri>? endpoints,
@@ -49,9 +51,9 @@ class OpenStreetMapNearbyRepository implements CachedNearbyRepository {
     this.cacheStore,
   }) : _client = client ?? http.Client(),
        _endpoints = endpoints ?? _defaultEndpoints,
-       _requestTimeout = requestTimeout ?? const Duration(seconds: 7),
+       _requestTimeout = requestTimeout ?? const Duration(seconds: 10),
        _totalRequestTimeout =
-           totalRequestTimeout ?? const Duration(seconds: 12),
+           totalRequestTimeout ?? const Duration(seconds: 30),
        _cacheTtl = cacheTtl ?? const Duration(minutes: 30),
        _maximumCacheAge = maximumCacheAge ?? const Duration(hours: 24);
 

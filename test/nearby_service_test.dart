@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -8,6 +9,30 @@ import 'package:suppup/models/spot.dart';
 import 'package:suppup/services/nearby_service.dart';
 
 void main() {
+  test('reaches the third provider after two timed-out requests', () async {
+    final visited = <String>[];
+    final repository = OpenStreetMapNearbyRepository(
+      endpoints: [
+        Uri.parse('https://first.example/api/interpreter'),
+        Uri.parse('https://second.example/api/interpreter'),
+        Uri.parse('https://third.example/api/interpreter'),
+      ],
+      client: MockClient((request) {
+        visited.add(request.url.host);
+        if (request.url.host != 'third.example') {
+          return Completer<http.Response>().future;
+        }
+        return Future.value(http.Response('{"elements":[]}', 200));
+      }),
+    );
+    final results = await repository.findNearby(
+      const LatLng(33.775, -84.351),
+      SpotCategory.walks,
+    );
+    expect(results, isEmpty);
+    expect(visited, ['first.example', 'second.example', 'third.example']);
+  });
+
   test('uses the backup server and caches successful nearby results', () async {
     var requestCount = 0;
     final client = MockClient((request) async {
