@@ -64,6 +64,8 @@ class OpenStreetMapNearbyRepository implements CachedNearbyRepository {
   final NearbyCacheStore? cacheStore;
   final Map<String, _CachedNearbyResults> _cache = {};
 
+  static const _cacheTimeout = Duration(seconds: 1);
+
   static final List<Uri> _defaultEndpoints = [
     Uri.parse('https://overpass-api.de/api/interpreter'),
     Uri.parse('https://maps.mail.ru/osm/tools/overpass/api/interpreter'),
@@ -134,7 +136,7 @@ class OpenStreetMapNearbyRepository implements CachedNearbyRepository {
     if (memoryEntry != null) return memoryEntry;
 
     try {
-      final encoded = await cacheStore?.read(key);
+      final encoded = await cacheStore?.read(key).timeout(_cacheTimeout);
       if (encoded == null) return null;
       final entry = _CachedNearbyResults.fromJson(
         jsonDecode(encoded) as Map<String, dynamic>,
@@ -148,7 +150,9 @@ class OpenStreetMapNearbyRepository implements CachedNearbyRepository {
 
   Future<void> _writeCache(String key, _CachedNearbyResults entry) async {
     try {
-      await cacheStore?.write(key, jsonEncode(entry.toJson()));
+      await cacheStore
+          ?.write(key, jsonEncode(entry.toJson()))
+          .timeout(_cacheTimeout);
     } catch (_) {
       // Nearby results still work when persistent cache storage is unavailable.
     }

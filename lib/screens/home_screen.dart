@@ -34,6 +34,11 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  // Bound platform/storage waits as well as HTTP: a stalled plugin must not
+  // leave the first screen loading forever.
+  static const _locationTimeout = Duration(seconds: 20);
+  static const _nearbyTimeout = Duration(seconds: 15);
+  static const _storageTimeout = Duration(seconds: 1);
   static const _demoCenter = LatLng(40.7128, -74.0060);
   static final _privacyPolicyUri = Uri.parse(
     'https://joshuaddorsey-cell.github.io/Suppup/privacy.html',
@@ -76,13 +81,17 @@ class _HomeScreenState extends State<HomeScreen> {
       _notice = null;
     });
 
-    final favoritesFuture = _preferences.favorites();
+    final category = _category;
+    // Attach an error handler immediately; this runs alongside location/network.
+    final favoritesFuture = _loadFavorites();
     var center = _center;
     var usePreview = false;
     String? notice;
     if (refreshLocation || _center == _demoCenter) {
       try {
-        center = await _locationProvider.currentLocation();
+        center = await _locationProvider.currentLocation().timeout(
+          _locationTimeout,
+        );
       } catch (error) {
         usePreview = true;
         notice = error is LocationException
@@ -91,10 +100,14 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
+    if (!mounted || requestId != _requestId) return;
+
     List<Spot>? savedResults;
     if (!usePreview && _nearbyRepository is CachedNearbyRepository) {
       try {
-        savedResults = await _nearbyRepository.cachedNearby(center, _category);
+        savedResults = await _nearbyRepository
+            .cachedNearby(center, category)
+            .timeout(_storageTimeout);
         if (savedResults != null && mounted && requestId == _requestId) {
           Set<String> favorites;
           try {
@@ -116,12 +129,16 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
+    if (!mounted || requestId != _requestId) return;
+
     List<Spot> results;
     if (usePreview) {
-      results = previewSpots(center, _category);
+      results = previewSpots(center, category);
     } else {
       try {
-        results = await _nearbyRepository.findNearby(center, _category);
+        results = await _nearbyRepository
+            .findNearby(center, category)
+            .timeout(_nearbyTimeout);
       } catch (_) {
         if (savedResults != null) {
           if (!mounted || requestId != _requestId) return;
@@ -133,7 +150,7 @@ class _HomeScreenState extends State<HomeScreen> {
           return;
         }
         usePreview = true;
-        results = previewSpots(center, _category);
+        results = previewSpots(center, category);
         notice =
             'Live map results are temporarily unavailable. These are Suppup preview examples.';
       }
@@ -141,7 +158,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     Set<String> favorites;
     try {
-      favorites = await _preferences.favorites();
+      favorites = await favoritesFuture;
       results = await _applySavedRatings(results);
     } catch (_) {
       favorites = <String>{};
@@ -157,10 +174,20 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  Future<Set<String>> _loadFavorites() async {
+    try {
+      return await _preferences.favorites().timeout(_storageTimeout);
+    } catch (_) {
+      return <String>{};
+    }
+  }
+
   Future<List<Spot>> _applySavedRatings(List<Spot> spots) async {
     return Future.wait(
       spots.map((spot) async {
-        final savedRating = await _preferences.ratingFor(spot.id);
+        final savedRating = await _preferences
+            .ratingFor(spot.id)
+            .timeout(_storageTimeout);
         return savedRating == null
             ? spot
             : spot.copyWith(

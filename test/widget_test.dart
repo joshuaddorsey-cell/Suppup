@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
@@ -37,6 +39,114 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Top-rated dog parks'), findsOneWidget);
     expect(find.text('Wagging Meadows Dog Park'), findsOneWidget);
+  });
+
+  testWidgets('stalled location leaves loading and shows labeled preview', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      SuppupApp(
+        home: HomeScreen(
+          locationProvider: _StalledLocation(),
+          nearbyRepository: _FakeNearbyRepository(),
+          preferenceStore: _MemoryPreferences(),
+          showMap: false,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 21));
+    await tester.pumpAndSettle();
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(find.textContaining('Location is unavailable'), findsOneWidget);
+  });
+
+  testWidgets('stalled preferences do not block nearby results', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      SuppupApp(
+        home: HomeScreen(
+          locationProvider: _FakeLocation(),
+          nearbyRepository: _FakeNearbyRepository(),
+          preferenceStore: _StalledPreferences(),
+          showMap: false,
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pumpAndSettle();
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(find.textContaining(' found'), findsOneWidget);
+  });
+
+  testWidgets('early preferences error is handled while location is pending', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      SuppupApp(
+        home: HomeScreen(
+          locationProvider: _StalledLocation(),
+          nearbyRepository: _FakeNearbyRepository(),
+          preferenceStore: _FailingPreferences(),
+          showMap: false,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 21));
+    await tester.pumpAndSettle();
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+  });
+
+  testWidgets(
+    'stalled nearby lookup leaves loading and shows labeled preview',
+    (tester) async {
+      await tester.pumpWidget(
+        SuppupApp(
+          home: HomeScreen(
+            locationProvider: _FakeLocation(),
+            nearbyRepository: _StalledNearbyRepository(),
+            preferenceStore: _MemoryPreferences(),
+            showMap: false,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 16));
+      await tester.pumpAndSettle();
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+      expect(
+        find.textContaining('Live map results are temporarily unavailable'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('saved results remain visible when refresh stalls', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      SuppupApp(
+        home: HomeScreen(
+          locationProvider: _FakeLocation(),
+          nearbyRepository: _SavedNearbyRepository(),
+          preferenceStore: _MemoryPreferences(),
+          showMap: false,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.textContaining('Showing saved nearby results'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 16));
+    await tester.pumpAndSettle();
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(
+      find.textContaining('Live results could not refresh'),
+      findsOneWidget,
+    );
+    expect(find.textContaining(' found'), findsOneWidget);
   });
 
   test('dog parks rank by rating before distance', () {
@@ -103,4 +213,37 @@ class _MemoryPreferences implements PreferenceStore {
   Future<void> setRating(String id, double value) async {
     _ratings[id] = value;
   }
+}
+
+class _StalledLocation implements LocationProvider {
+  @override
+  Future<LatLng> currentLocation() => Completer<LatLng>().future;
+}
+
+class _StalledNearbyRepository implements NearbyRepository {
+  @override
+  Future<List<Spot>> findNearby(LatLng center, SpotCategory category) =>
+      Completer<List<Spot>>().future;
+}
+
+class _StalledPreferences extends _MemoryPreferences {
+  @override
+  Future<Set<String>> favorites() => Completer<Set<String>>().future;
+  @override
+  Future<double?> ratingFor(String id) => Completer<double?>().future;
+}
+
+class _FailingPreferences extends _MemoryPreferences {
+  @override
+  Future<Set<String>> favorites() =>
+      Future.error(StateError('storage unavailable'));
+}
+
+class _SavedNearbyRepository extends _StalledNearbyRepository
+    implements CachedNearbyRepository {
+  @override
+  Future<List<Spot>?> cachedNearby(
+    LatLng center,
+    SpotCategory category,
+  ) async => previewSpots(center, category);
 }

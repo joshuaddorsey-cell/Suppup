@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -8,6 +9,17 @@ import 'package:suppup/models/spot.dart';
 import 'package:suppup/services/nearby_service.dart';
 
 void main() {
+  test('stalled disk cache cannot block a successful network result', () async {
+    final repository = OpenStreetMapNearbyRepository(
+      cacheStore: _StalledCacheStore(),
+      client: MockClient((_) async => http.Response('{"elements":[]}', 200)),
+    );
+    final spots = await repository
+        .findNearby(const LatLng(33.775, -84.351), SpotCategory.walks)
+        .timeout(const Duration(seconds: 4));
+    expect(spots, isEmpty);
+  });
+
   test('uses the backup server and caches successful nearby results', () async {
     var requestCount = 0;
     final client = MockClient((request) async {
@@ -139,4 +151,11 @@ class _MemoryNearbyCacheStore implements NearbyCacheStore {
   Future<void> write(String key, String value) async {
     values[key] = value;
   }
+}
+
+class _StalledCacheStore implements NearbyCacheStore {
+  @override
+  Future<String?> read(String key) => Completer<String?>().future;
+  @override
+  Future<void> write(String key, String value) => Completer<void>().future;
 }
