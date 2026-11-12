@@ -39,6 +39,8 @@ class SharedPreferencesNearbyCacheStore implements NearbyCacheStore {
 }
 
 class OpenStreetMapNearbyRepository implements CachedNearbyRepository {
+  // The server query allows 8 seconds. Leave transport overhead and enough
+  // total budget for all three providers, including a slow first and second.
   OpenStreetMapNearbyRepository({
     http.Client? client,
     List<Uri>? endpoints,
@@ -49,14 +51,16 @@ class OpenStreetMapNearbyRepository implements CachedNearbyRepository {
     this.cacheStore,
   }) : _client = client ?? http.Client(),
        _endpoints = endpoints ?? _defaultEndpoints,
-       _requestTimeout = requestTimeout ?? const Duration(seconds: 7),
+       _useRegionalProviders = endpoints == null,
+       _requestTimeout = requestTimeout ?? const Duration(seconds: 10),
        _totalRequestTimeout =
-           totalRequestTimeout ?? const Duration(seconds: 12),
+           totalRequestTimeout ?? const Duration(seconds: 30),
        _cacheTtl = cacheTtl ?? const Duration(minutes: 30),
        _maximumCacheAge = maximumCacheAge ?? const Duration(hours: 24);
 
   final http.Client _client;
   final List<Uri> _endpoints;
+  final bool _useRegionalProviders;
   final Duration _requestTimeout;
   final Duration _totalRequestTimeout;
   final Duration _cacheTtl;
@@ -90,15 +94,26 @@ class OpenStreetMapNearbyRepository implements CachedNearbyRepository {
     }
 
     Object? lastFailure;
-    final query = _query(center, category);
+    final regional = _useRegionalProviders ? _regionalEndpoint(center) : null;
+    final endpoints = regional == null
+        ? _endpoints
+        : [regional, _defaultEndpoints.first, _defaultEndpoints.last];
     final stopwatch = Stopwatch()..start();
-    for (final endpoint in _endpoints) {
+    for (final endpoint in endpoints) {
       final remaining = _totalRequestTimeout - stopwatch.elapsed;
       if (remaining <= Duration.zero) break;
       final attemptTimeout = remaining < _requestTimeout
           ? remaining
           : _requestTimeout;
       try {
+        // Regional providers receive only an approximate search location.
+        final queryCenter = endpoint == regional
+            ? LatLng(
+                double.parse(center.latitude.toStringAsFixed(2)),
+                double.parse(center.longitude.toStringAsFixed(2)),
+              )
+            : center;
+        final query = _query(queryCenter, category);
         final response = await _client
             .post(
               endpoint,
@@ -115,6 +130,9 @@ class OpenStreetMapNearbyRepository implements CachedNearbyRepository {
         }
 
         final spots = _parseResponse(response.body, center, category);
+        // A regional extract may not cover this location. Ask a global
+        // provider before treating an empty response as definitive.
+        if (endpoint == regional && spots.isEmpty) continue;
         final entry = _CachedNearbyResults(DateTime.now(), spots);
         _cache[cacheKey] = entry;
         await _writeCache(cacheKey, entry);
@@ -127,6 +145,23 @@ class OpenStreetMapNearbyRepository implements CachedNearbyRepository {
     throw NearbyException(
       'The nearby map services are taking a break. $lastFailure',
     );
+  }
+
+  Uri? _regionalEndpoint(LatLng center) {
+    // Conservative regional bounds. Outside these areas keep global providers.
+    if (center.latitude >= 15 &&
+        center.latitude <= 72 &&
+        center.longitude >= -169 &&
+        center.longitude <= -52) {
+      return Uri.parse('https://ovp.dresel.systems/api-na/interpreter');
+    }
+    if (center.latitude >= 35 &&
+        center.latitude <= 72 &&
+        center.longitude >= -12 &&
+        center.longitude <= 40) {
+      return Uri.parse('https://ovp.dresel.systems/api/interpreter');
+    }
+    return null;
   }
 
   Future<_CachedNearbyResults?> _readCache(String key) async {

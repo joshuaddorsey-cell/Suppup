@@ -45,6 +45,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-private-test"
+        }
         release {
             signingConfig = signingConfigs.getByName("release")
         }
