@@ -45,7 +45,7 @@
       <h2>How location is processed</h2>
       <p>
         Nearby searches send the selected coordinates over encrypted HTTPS
-        connections to public OpenStreetMap-compatible Overpass services.
+        connections to public OpenStreetMap-compatible Overpass services. For parts of North America and Europe, Suppup may use Dresel Systems regional Overpass services; those requests round latitude and longitude to two decimal places (roughly one kilometer). Global fallback services may receive the selected coordinates at full precision.
         Loading the map also sends the viewed map area and ordinary network
         information, such as an IP address, to OpenStreetMap service operators.
         These third-party operators may process technical logs under their own

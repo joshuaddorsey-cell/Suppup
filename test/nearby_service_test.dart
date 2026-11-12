@@ -9,6 +9,59 @@ import 'package:suppup/models/spot.dart';
 import 'package:suppup/services/nearby_service.dart';
 
 void main() {
+  test(
+    'regional provider receives rounded coordinates, not precise location',
+    () async {
+      final repository = OpenStreetMapNearbyRepository(
+        client: MockClient((request) async {
+          expect(request.url.host, 'ovp.dresel.systems');
+          expect(request.url.path, '/api-na/interpreter');
+          final query = request.bodyFields['data']!;
+          expect(query, contains('33.78,-84.35'));
+          expect(query, isNot(contains('33.775123')));
+          return http.Response(
+            '{"elements":[{"type":"way","id":1,"center":{"lat":33.776,"lon":-84.352},"tags":{"name":"Live trail"}}]}',
+            200,
+          );
+        }),
+      );
+      final result = await repository.findNearby(
+        const LatLng(33.775123, -84.351234),
+        SpotCategory.walks,
+      );
+      expect(result.single.name, 'Live trail');
+      expect(result.single.isPreview, isFalse);
+    },
+  );
+
+  test('empty regional response falls back to worldwide provider', () async {
+    final hosts = <String>[];
+    final repository = OpenStreetMapNearbyRepository(
+      client: MockClient((request) async {
+        hosts.add(request.url.host);
+        return http.Response('{"elements":[]}', 200);
+      }),
+    );
+    await repository.findNearby(
+      const LatLng(48.86, 2.35),
+      SpotCategory.dogParks,
+    );
+    expect(hosts, ['ovp.dresel.systems', 'overpass-api.de']);
+  });
+
+  test('outside supported regions starts with worldwide provider', () async {
+    final repository = OpenStreetMapNearbyRepository(
+      client: MockClient((request) async {
+        expect(request.url.host, 'overpass-api.de');
+        return http.Response('{"elements":[]}', 200);
+      }),
+    );
+    await repository.findNearby(
+      const LatLng(-33.87, 151.21),
+      SpotCategory.dogParks,
+    );
+  });
+
   test('reaches the third provider after two timed-out requests', () async {
     final visited = <String>[];
     final repository = OpenStreetMapNearbyRepository(
