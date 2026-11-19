@@ -1,0 +1,42 @@
+name: iPhone device build
+on:
+  workflow_dispatch:
+  push:
+    branches: [ios-release]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Flutter
+        run: |
+          git clone --depth 1 --branch 3.44.8 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - name: Prepare iPhone audio
+        if: contains(github.repository, 'DreamVoyages')
+        run: |
+          brew install ffmpeg
+          mkdir -p assets/audio
+          for f in android/app/src/main/res/raw/*.ogg; do ffmpeg -hide_banner -loglevel error -i "$f" -c:a aac -b:a 96k "assets/audio/$(basename "$f" .ogg).m4a"; done
+      - name: Analyze, test and build
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+          flutter build ios --release --no-codesign --build-name=1.0.0 --build-number=1
+      - name: Package physical-device app
+        run: |
+          mkdir -p "$RUNNER_TEMP/package/Payload"
+          cp -R build/ios/iphoneos/Runner.app "$RUNNER_TEMP/package/Payload/"
+          cd "$RUNNER_TEMP/package"
+          zip -qry device.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iphone-device
+          path: ${{ runner.temp }}/package/device.ipa
+          retention-days: 14
